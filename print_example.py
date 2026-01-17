@@ -1,6 +1,10 @@
+"""
+Basic image printing example.
+
+Prints a header followed by an image using the default Bayer dithering.
+"""
 from printer_utils import ThermalPrinter
 
-# Initialize printer
 printer = ThermalPrinter()
 
 # Print a header

@@ -1,13 +1,11 @@
 from escpos.printer import Network
 from PIL import Image
-import io
 import re
 import PIL.ImageOps
 import PIL.ImageEnhance
 import numpy
 import requests
 from urllib.parse import urlparse
-import os
 from io import BytesIO
 import textwrap
 

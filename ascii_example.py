@@ -1,6 +1,14 @@
+"""
+Bitmap printing example.
+
+Prints an image as a high-contrast 1-bit bitmap. The image is converted
+to grayscale, contrast-enhanced, inverted, and printed at full width.
+
+Note: Despite the name, this doesn't output ASCII characters - it prints
+a binary (black/white) raster image.
+"""
 from printer_utils import ThermalPrinter
 
-# Initialize printer
 printer = ThermalPrinter()
 
 # Print a title
