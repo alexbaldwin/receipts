@@ -8,6 +8,8 @@ CLI tool and Python library for printing to Epson TM-T88V thermal receipt printe
 - **Markdown printing** with headers, lists, bold text, and inline images
 - **Image printing** with Bayer matrix dithering
 - **Remote image support** - Print images from URLs
+- **HTTP print server** - Run on a Raspberry Pi and accept JSON, raw bodies, URLs, or file uploads
+- **Network or USB printer connection** - Configure with environment variables
 - **Environment variable config** - Set printer IP once, use everywhere
 
 ## Installation
@@ -18,6 +20,7 @@ uv pip install -e .
 
 # Or run directly without installing
 uv run receipt print "# Hello"
+uv run receipt-server
 
 # Using pip
 pip install -e .
@@ -32,14 +35,22 @@ After installation, the `receipt` command is available globally.
 Set your printer IP via environment variable (recommended):
 
 ```bash
-export THERMAL_PRINTER_IP=192.168.1.193
+export THERMAL_PRINTER_IP=192.168.2.2
 export THERMAL_PRINTER_PORT=9100  # optional, default is 9100
+```
+
+For USB-connected printers:
+
+```bash
+export THERMAL_PRINTER_CONNECTION=usb
+export THERMAL_PRINTER_USB_VENDOR_ID=0x04b8
+export THERMAL_PRINTER_USB_PRODUCT_ID=0x0202
 ```
 
 Or pass it with each command:
 
 ```bash
-receipt --ip 192.168.1.193 print "# Hello"
+receipt --ip 192.168.2.2 print "# Hello"
 ```
 
 ### Commands
@@ -87,6 +98,71 @@ receipt image --cut logo.png
 receipt cut
 ```
 
+## HTTP Server
+
+Start the server:
+
+```bash
+receipt-server
+```
+
+By default it listens on `0.0.0.0:8080`. Change that with:
+
+```bash
+export RECEIPT_SERVER_HOST=0.0.0.0
+export RECEIPT_SERVER_PORT=8080
+```
+
+### Print Requests
+
+Raw markdown:
+
+```bash
+curl -X POST 'http://raspberrypi.local:8080/print?cut=true' \
+  -H 'content-type: text/markdown' \
+  --data-binary '# Hello\n\nPrinted from the Pi server.'
+```
+
+JSON:
+
+```bash
+curl -X POST 'http://raspberrypi.local:8080/v1/print' \
+  -H 'content-type: application/json' \
+  -d '{"markdown":"# Receipt\n\n**Total:** $7.50","cut":true}'
+```
+
+Image upload:
+
+```bash
+curl -X POST 'http://raspberrypi.local:8080/print?cut=true' \
+  -F 'file=@logo.png'
+```
+
+URL fetch:
+
+```bash
+curl -X POST 'http://raspberrypi.local:8080/print' \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://example.com/logo.png","cut":true}'
+```
+
+Dry-run without printing:
+
+```bash
+curl -X POST 'http://raspberrypi.local:8080/print?dry_run=true' \
+  -H 'content-type: text/plain' \
+  --data-binary 'hello'
+```
+
+Supported inputs:
+
+- `text/markdown`, `text/plain`, `text/html`, and JSON bodies
+- `image/*` bodies and multipart file uploads
+- JSON `content`, `markdown`, `text`, `image`, or `url` fields
+- Base64/data URI images via JSON `content`
+
+Unknown binary content returns `415 Unsupported Media Type` instead of sending junk to the printer.
+
 ### Markdown Support
 
 The `print` command supports:
@@ -121,7 +197,7 @@ This section documents how to call the `receipt` CLI from an LLM or automated sy
 Before calling, ensure the printer IP is configured:
 
 ```bash
-export THERMAL_PRINTER_IP=192.168.1.193
+export THERMAL_PRINTER_IP=192.168.2.2
 ```
 
 ### Command Patterns
@@ -225,7 +301,7 @@ For programmatic use, import directly:
 from printer_utils import ThermalPrinter
 
 # Connect to printer
-printer = ThermalPrinter(ip_address="192.168.1.193", port=9100)
+printer = ThermalPrinter(ip_address="192.168.2.2", port=9100)
 
 # Print text
 printer.print_text("Hello, World!", bold=True)
@@ -257,10 +333,50 @@ dithered.save("output.png")
 
 ## Printer Setup
 
-1. Connect the TM-T88V to your network
-2. Find the printer's IP address (check printer settings or router DHCP)
-3. Default port is 9100 (standard raw printing port)
-4. Set `THERMAL_PRINTER_IP` environment variable
+### Network
+
+1. Connect the TM-T88V to Ethernet or Wi-Fi.
+2. Find the printer's IP address from its settings page or your router DHCP table.
+3. Set `THERMAL_PRINTER_CONNECTION=network`.
+4. Set `THERMAL_PRINTER_IP` and optionally `THERMAL_PRINTER_PORT`.
+
+### USB
+
+1. Connect the printer to the Raspberry Pi over USB.
+2. Run `lsusb` and find the `vendor:product` pair, for example `04b8:0202`.
+3. Set `THERMAL_PRINTER_CONNECTION=usb`.
+4. Set `THERMAL_PRINTER_USB_VENDOR_ID=0x04b8` and `THERMAL_PRINTER_USB_PRODUCT_ID=0x0202`.
+5. Make sure the service user can access USB printers, usually by adding it to the `lp` group.
+
+## Raspberry Pi Service
+
+Example deployment files live in `deploy/`.
+
+```bash
+sudo apt update
+sudo apt install -y git python3-venv
+
+git clone <this-repo-url> /home/pi/receipts
+cd /home/pi/receipts
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e .
+
+sudo mkdir -p /etc/receipt-printer
+sudo cp deploy/receipt-server.env.example /etc/receipt-printer/server.env
+sudo cp deploy/receipt-server.service /etc/systemd/system/receipt-server.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now receipt-server
+```
+
+Edit `/etc/receipt-printer/server.env` for your printer connection. If your Pi user or checkout path is not `pi` and `/home/pi/receipts`, edit `/etc/systemd/system/receipt-server.service` before enabling it.
+
+Check status and logs:
+
+```bash
+systemctl status receipt-server
+journalctl -u receipt-server -f
+```
 
 ## Printer Specs (TM-T88V)
 

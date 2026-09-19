@@ -5,8 +5,11 @@ Thermal Receipt Printer CLI
 Print markdown, text, and images to an Epson TM-T88V thermal printer.
 
 ENVIRONMENT VARIABLES:
-    THERMAL_PRINTER_IP    Printer IP address (default: 192.168.1.193)
+    THERMAL_PRINTER_CONNECTION  Printer connection: network or usb (default: network)
+    THERMAL_PRINTER_IP    Printer IP address (default: 192.168.2.2)
     THERMAL_PRINTER_PORT  Printer port (default: 9100)
+    THERMAL_PRINTER_USB_VENDOR_ID   USB vendor ID from lsusb
+    THERMAL_PRINTER_USB_PRODUCT_ID  USB product ID from lsusb
 
 EXAMPLES:
     # Print a markdown file
@@ -69,16 +72,37 @@ from pathlib import Path
 
 def get_printer_config(args):
     """Get printer IP and port from args or environment."""
-    ip = args.ip or os.environ.get('THERMAL_PRINTER_IP', '192.168.1.193')
-    port = args.port or int(os.environ.get('THERMAL_PRINTER_PORT', '9100'))
-    return ip, port
+    from printer_utils import DEFAULT_PRINTER_IP, DEFAULT_PRINTER_PORT
+
+    connection = (args.connection or os.environ.get('THERMAL_PRINTER_CONNECTION', 'network')).lower()
+    ip = args.ip or os.environ.get('THERMAL_PRINTER_IP', DEFAULT_PRINTER_IP)
+    port = args.port or int(os.environ.get('THERMAL_PRINTER_PORT', str(DEFAULT_PRINTER_PORT)))
+    return connection, ip, port
+
+
+def describe_printer(args):
+    """Return a human-readable printer target for status messages."""
+    connection, ip, port = get_printer_config(args)
+    if connection == 'usb':
+        vendor_id = args.usb_vendor_id or os.environ.get('THERMAL_PRINTER_USB_VENDOR_ID', 'unknown')
+        product_id = args.usb_product_id or os.environ.get('THERMAL_PRINTER_USB_PRODUCT_ID', 'unknown')
+        return f'USB printer {vendor_id}:{product_id}'
+    return f'{ip}:{port}'
 
 
 def get_printer(args):
     """Initialize and return printer instance."""
     from printer_utils import ThermalPrinter
-    ip, port = get_printer_config(args)
-    return ThermalPrinter(ip_address=ip, port=port)
+    return ThermalPrinter.from_env(
+        connection=args.connection,
+        ip_address=args.ip,
+        port=args.port,
+        usb_vendor_id=args.usb_vendor_id,
+        usb_product_id=args.usb_product_id,
+        usb_in_endpoint=args.usb_in_endpoint,
+        usb_out_endpoint=args.usb_out_endpoint,
+        usb_timeout=args.usb_timeout,
+    )
 
 
 def read_input(source):
@@ -98,47 +122,43 @@ def read_input(source):
 
 def cmd_print(args):
     """Print markdown content."""
-    printer = get_printer(args)
     content = read_input(args.content)
 
-    printer.print_markdown(content)
+    with get_printer(args) as printer:
+        printer.print_markdown(content)
+        if args.cut:
+            printer.cut_paper()
 
-    if args.cut:
-        printer.cut_paper()
-
-    print(f"Printed to {get_printer_config(args)[0]}", file=sys.stderr)
+    print(f"Printed to {describe_printer(args)}", file=sys.stderr)
 
 
 def cmd_text(args):
     """Print plain text."""
-    printer = get_printer(args)
     content = read_input(args.content)
 
-    printer.print_text(content, bold=args.bold)
+    with get_printer(args) as printer:
+        printer.print_text(content, bold=args.bold)
+        if args.cut:
+            printer.cut_paper()
 
-    if args.cut:
-        printer.cut_paper()
-
-    print(f"Printed to {get_printer_config(args)[0]}", file=sys.stderr)
+    print(f"Printed to {describe_printer(args)}", file=sys.stderr)
 
 
 def cmd_image(args):
     """Print an image."""
-    printer = get_printer(args)
+    with get_printer(args) as printer:
+        printer.print_image(args.path)
+        if args.cut:
+            printer.cut_paper()
 
-    printer.print_image(args.path)
-
-    if args.cut:
-        printer.cut_paper()
-
-    print(f"Printed image to {get_printer_config(args)[0]}", file=sys.stderr)
+    print(f"Printed image to {describe_printer(args)}", file=sys.stderr)
 
 
 def cmd_cut(args):
     """Cut the paper."""
-    printer = get_printer(args)
-    printer.cut_paper()
-    print(f"Paper cut on {get_printer_config(args)[0]}", file=sys.stderr)
+    with get_printer(args) as printer:
+        printer.cut_paper()
+    print(f"Paper cut on {describe_printer(args)}", file=sys.stderr)
 
 
 def main():
@@ -148,8 +168,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Environment Variables:
-  THERMAL_PRINTER_IP    Printer IP address (default: 192.168.1.193)
+  THERMAL_PRINTER_CONNECTION  Printer connection: network or usb (default: network)
+  THERMAL_PRINTER_IP    Printer IP address (default: 192.168.2.2)
   THERMAL_PRINTER_PORT  Printer port (default: 9100)
+  THERMAL_PRINTER_USB_VENDOR_ID   USB vendor ID from lsusb
+  THERMAL_PRINTER_USB_PRODUCT_ID  USB product ID from lsusb
 
 Examples:
   receipt print "# Hello World"
@@ -164,8 +187,14 @@ Examples:
     )
 
     # Global options
-    parser.add_argument('--ip', help='Printer IP address (or set THERMAL_PRINTER_IP)')
-    parser.add_argument('--port', type=int, help='Printer port (or set THERMAL_PRINTER_PORT)')
+    parser.add_argument('--connection', choices=('network', 'usb'), help='Printer connection type (or set THERMAL_PRINTER_CONNECTION)')
+    parser.add_argument('--ip', help='Network printer IP address (or set THERMAL_PRINTER_IP)')
+    parser.add_argument('--port', type=int, help='Network printer port (or set THERMAL_PRINTER_PORT)')
+    parser.add_argument('--usb-vendor-id', help='USB printer vendor ID, decimal or hex (or set THERMAL_PRINTER_USB_VENDOR_ID)')
+    parser.add_argument('--usb-product-id', help='USB printer product ID, decimal or hex (or set THERMAL_PRINTER_USB_PRODUCT_ID)')
+    parser.add_argument('--usb-in-endpoint', help='USB input endpoint, decimal or hex (default: 0x82)')
+    parser.add_argument('--usb-out-endpoint', help='USB output endpoint, decimal or hex (default: 0x01)')
+    parser.add_argument('--usb-timeout', help='USB timeout in milliseconds (default: 0)')
     parser.add_argument('--version', action='version', version='%(prog)s 1.0.0')
 
     subparsers = parser.add_subparsers(dest='command', help='Commands')

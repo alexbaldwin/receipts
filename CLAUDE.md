@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CLI tool and Python library for printing to an Epson TM-T88V thermal receipt printer over network (ESC/POS protocol). Supports text formatting, image dithering, markdown rendering, and bitmap output.
+CLI tool, HTTP server, and Python library for printing to an Epson TM-T88V thermal receipt printer over network or USB (ESC/POS protocol). Supports text formatting, image dithering, markdown rendering, and bitmap output.
 
 ## Setup
 
@@ -26,7 +26,7 @@ pip install -e .
 The `receipt` command is the primary interface. Configure printer IP via environment variable:
 
 ```bash
-export THERMAL_PRINTER_IP=192.168.1.193
+export THERMAL_PRINTER_IP=192.168.2.2
 ```
 
 ### Commands
@@ -42,12 +42,16 @@ receipt text --bold 'Bold text'                     # Print bold text
 receipt image photo.jpg                             # Print image (local)
 receipt image 'https://example.com/img.png'        # Print image (URL)
 receipt cut                                         # Cut paper only
+receipt-server                                      # Start HTTP server on 0.0.0.0:8080
 ```
 
 ### Environment Variables
 
-- `THERMAL_PRINTER_IP` - Printer IP address (default: 192.168.1.193)
+- `THERMAL_PRINTER_IP` - Printer IP address (default: 192.168.2.2)
 - `THERMAL_PRINTER_PORT` - Printer port (default: 9100)
+- `THERMAL_PRINTER_CONNECTION` - `network` or `usb` (default: network)
+- `THERMAL_PRINTER_USB_VENDOR_ID` / `THERMAL_PRINTER_USB_PRODUCT_ID` - USB IDs from `lsusb`
+- `RECEIPT_SERVER_HOST` / `RECEIPT_SERVER_PORT` - HTTP server bind config
 
 ## Running Examples
 
@@ -69,10 +73,20 @@ python ascii_example.py      # High-contrast bitmap output
 **cli.py** - CLI entry point using argparse:
 - Subcommands: `print`, `text`, `image`, `cut`
 - Reads from file paths, strings, or stdin
-- Supports `--ip` and `--port` flags or env vars
+- Supports network and USB printer config flags or env vars
+
+**server.py** - FastAPI HTTP server:
+- `POST /print` and `POST /v1/print` accept JSON, raw bodies, multipart uploads, or URLs
+- `dry_run=true` validates request normalization without touching printer hardware
+- Serializes print jobs with a process lock so concurrent requests do not interleave printer bytes
+
+**content_utils.py** - Content normalization:
+- Detects markdown, text, HTML, JSON, image bytes, data URIs, and URLs
+- Produces `PrintJob` objects with `markdown`, `text`, or `image` kind
+- Rejects unsupported binary bodies before they reach the printer
 
 **printer_utils.py** - `ThermalPrinter` class wrapping ESC/POS commands:
-- Network connection to printer (default: 192.168.1.193:9100)
+- Network connection to printer (default: 192.168.2.2:9100) or USB connection via vendor/product ID
 - `print_text()` - Basic text with bold support
 - `print_image()` - Image printing with Bayer matrix dithering (local files or URLs)
 - `print_markdown()` - Markdown rendering with headers, lists, bold, and inline images
@@ -101,3 +115,11 @@ Typography effects are controlled via raw ESC/POS commands (see typography_examp
 ### libdither
 
 Reference C library for dithering algorithms (not used by Python code). Contains documentation and examples of many dithering techniques.
+
+## Raspberry Pi deployment
+
+See `deploy/README.md`. `deploy/install.sh` sets up the venv, udev rule, env file, and systemd unit.
+USB needs `python-escpos[usb]` (pyusb). Every job must call `ThermalPrinter.close()` (or use it as a
+context manager) so the USB interface is released before the next job, or the next open fails with
+"Resource busy". The TM-T88V ignores its built-in USB port when an interface card is fitted until
+"Built-in USB" is selected with the FEED button menu (steps in the deploy README).

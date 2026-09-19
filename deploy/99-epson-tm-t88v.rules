@@ -1,0 +1,2 @@
+# Epson thermal printers: allow the lp group to open the raw USB device
+SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", MODE="0660", GROUP="lp", TAG+="uaccess"

@@ -1,5 +1,6 @@
-from escpos.printer import Network
+from escpos.printer import Network, Usb
 from PIL import Image
+import os
 import re
 import PIL.ImageOps
 import PIL.ImageEnhance
@@ -9,22 +10,131 @@ from urllib.parse import urlparse
 from io import BytesIO
 import textwrap
 
+
+DEFAULT_PRINTER_IP = "192.168.2.2"
+DEFAULT_PRINTER_PORT = 9100
+
+
+def _parse_int(value, name):
+    """Parse decimal or 0x-prefixed integer config values."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value), 0)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer or hex value, got {value!r}") from exc
+
+
 class ThermalPrinter:
-    def __init__(self, ip_address="192.168.1.193", port=9100):
-        """Initialize network printer connection"""
-        self.printer = Network(ip_address, port)
-        
+    def __init__(
+        self,
+        ip_address=None,
+        port=None,
+        connection=None,
+        usb_vendor_id=None,
+        usb_product_id=None,
+        usb_in_endpoint=None,
+        usb_out_endpoint=None,
+        usb_timeout=None,
+        printer_backend=None,
+        initialize=True,
+    ):
+        """Initialize a network or USB printer connection."""
         # TM-T88V specific settings
         self.MAX_WIDTH = 512  # Standard width for TM-T88V
         self.DPI = 180       # Standard DPI
         self.CHARS_PER_LINE = 42  # Approximate characters that fit on one line
-        
-        # Initialize printer
-        self._raw(b'\x1b\x40')  # ESC @ - Initialize printer
+
+        self.connection = (connection or os.environ.get("THERMAL_PRINTER_CONNECTION") or "network").lower()
+        self.printer = printer_backend or self._build_backend(
+            ip_address=ip_address,
+            port=port,
+            usb_vendor_id=usb_vendor_id,
+            usb_product_id=usb_product_id,
+            usb_in_endpoint=usb_in_endpoint,
+            usb_out_endpoint=usb_out_endpoint,
+            usb_timeout=usb_timeout,
+        )
+
+        if initialize:
+            self._raw(b'\x1b\x40')  # ESC @ - Initialize printer
+
+    @classmethod
+    def from_env(cls, **overrides):
+        """Create a printer using THERMAL_PRINTER_* environment variables."""
+        return cls(**overrides)
+
+    def _build_backend(
+        self,
+        ip_address=None,
+        port=None,
+        usb_vendor_id=None,
+        usb_product_id=None,
+        usb_in_endpoint=None,
+        usb_out_endpoint=None,
+        usb_timeout=None,
+    ):
+        if self.connection == "network":
+            host = ip_address or os.environ.get("THERMAL_PRINTER_IP", DEFAULT_PRINTER_IP)
+            printer_port = _parse_int(port or os.environ.get("THERMAL_PRINTER_PORT", DEFAULT_PRINTER_PORT), "THERMAL_PRINTER_PORT")
+            return Network(host, printer_port)
+
+        if self.connection == "usb":
+            vendor_id = _parse_int(
+                usb_vendor_id or os.environ.get("THERMAL_PRINTER_USB_VENDOR_ID"),
+                "THERMAL_PRINTER_USB_VENDOR_ID",
+            )
+            product_id = _parse_int(
+                usb_product_id or os.environ.get("THERMAL_PRINTER_USB_PRODUCT_ID"),
+                "THERMAL_PRINTER_USB_PRODUCT_ID",
+            )
+            if vendor_id is None or product_id is None:
+                raise ValueError(
+                    "USB printing requires THERMAL_PRINTER_USB_VENDOR_ID and "
+                    "THERMAL_PRINTER_USB_PRODUCT_ID"
+                )
+
+            in_endpoint = _parse_int(
+                usb_in_endpoint or os.environ.get("THERMAL_PRINTER_USB_IN_ENDPOINT", "0x82"),
+                "THERMAL_PRINTER_USB_IN_ENDPOINT",
+            )
+            out_endpoint = _parse_int(
+                usb_out_endpoint or os.environ.get("THERMAL_PRINTER_USB_OUT_ENDPOINT", "0x01"),
+                "THERMAL_PRINTER_USB_OUT_ENDPOINT",
+            )
+            timeout = _parse_int(
+                usb_timeout or os.environ.get("THERMAL_PRINTER_USB_TIMEOUT", "0"),
+                "THERMAL_PRINTER_USB_TIMEOUT",
+            )
+            return Usb(vendor_id, product_id, timeout=timeout, in_ep=in_endpoint, out_ep=out_endpoint)
+
+        raise ValueError("THERMAL_PRINTER_CONNECTION must be 'network' or 'usb'")
         
     def _raw(self, data):
         """Send raw bytes to printer"""
         self.printer._raw(data)
+
+    def close(self):
+        """Release the printer connection so the next job can open it."""
+        backend = getattr(self, "printer", None)
+        if backend is None:
+            return
+        close = getattr(backend, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        self.printer = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
         
     def print_text(self, text, bold=False):
         """Print text with basic formatting"""
@@ -41,6 +151,7 @@ class ThermalPrinter:
                 
         except Exception as e:
             print(f"Error printing text: {str(e)}")
+            raise
     
     def _get_bayer_matrix(self, n=8):
         """Generate an n×n Bayer matrix for ordered dithering"""
@@ -65,7 +176,7 @@ class ThermalPrinter:
             parsed = urlparse(image_path)
             if parsed.scheme in ('http', 'https'):
                 # Download image from URL
-                response = requests.get(image_path)
+                response = requests.get(image_path, timeout=30)
                 response.raise_for_status()  # Raise exception for bad status codes
                 image = Image.open(BytesIO(response.content))
             else:
@@ -119,6 +230,7 @@ class ThermalPrinter:
             print(f"Error printing image: {str(e)}")
             import traceback
             traceback.print_exc()
+            raise
     
     def cut_paper(self):
         """Perform a full cut with padding"""
@@ -263,6 +375,7 @@ class ThermalPrinter:
             print(f"Error printing markdown: {str(e)}")
             import traceback
             traceback.print_exc()
+            raise
     
     def print_ascii_art(self, image_path, width=512, chars=" .:-=+#@"):
         """Convert image to ASCII art and print it"""
@@ -315,3 +428,4 @@ class ThermalPrinter:
             print(f"Error creating ASCII art: {str(e)}")
             import traceback
             traceback.print_exc()
+            raise
